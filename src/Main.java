@@ -1,19 +1,19 @@
+// =====================================================================
 // Assignment 1 - Myers' diff (Java)
+// =====================================================================
 //
-// How to run:
-//   java Main lines     A B    -> Part A: minimal line diff from file A to file B
-//   java Main highlight A B    -> Part B: same diff, plus a "? old | new" line for each changed pair
+// Program kaise chalate hain:
+//   java Main lines     A B    -> Part A: file A se file B tak ka line diff
+//   java Main highlight A B    -> Part B: wahi diff + har changed line pair ke liye "? old | new" line
 //
-// Output of "lines": one line per step of the edit script
-//   " text"  keep   (line is in both files)
-//   "-text"  delete (line is only in A)
-//   "+text"  insert (line is only in B)
-// Inside every change block, all "-" lines are printed before any "+" line.
+// Output ka matlab:
+//   " text"  -> line dono files mein same hai (keep)
+//   "-text"  -> line sirf A mein thi, delete hui
+//   "+text"  -> line sirf B mein hai, insert hui
+//   "? 12-13 | 11-12" -> (sirf highlight mein) line ke andar kaun se characters badle
 //
-// Output of "highlight": the same, and after each paired "+" line one extra line
-//   "? <changed ranges in old line> | <changed ranges in new line>"   e.g.  "? 12-13 | 11-12"
-//
-// If a file cannot be read: nothing on stdout, a message on stderr, exit code 2.
+// Rule: ek change block mein pehle saari "-" lines, phir saari "+" lines.
+// Agar koi file read nahi hui: stdout pe kuch nahi, stderr pe message, exit code 2.
 
 import java.io.BufferedOutputStream;
 import java.io.FileDescriptor;
@@ -29,388 +29,426 @@ import java.util.HashMap;
 public class Main {
 
     // =================================================================
-    // 1. Reading a file into lines
+    // PART 1: File ko lines mein todna
     // =================================================================
     //
-    // Rules from the assignment:
-    //   - read raw bytes, not text
-    //   - split on the byte '\n'
-    //   - if the last piece is empty, drop it (so a final newline adds no extra line)
-    //   - keep '\r' as part of the line ("a\r\n" and "a\n" are different lines)
+    // Assignment ke rules:
+    //   - file ko raw bytes ki tarah padho, text ki tarah nahi
+    //   - sirf '\n' byte pe todo
+    //   - agar last piece khaali hai to use hata do (last newline se extra line nahi banti)
+    //   - '\r' line ka hissa hi rehta hai, isliye "a\r\n" aur "a\n" alag lines hain
     //
-    // We do not copy each line. We keep the whole file and remember
-    // where every line starts and ends inside it.
+    // Har line ki copy banane ke bajaye hum poori file ek baar rakhte hain,
+    // aur bas yaad rakhte hain ki har line kahan shuru aur kahan khatam hoti hai.
 
     static class FileLines {
-        byte[] content;      // the whole file
-        int[] lineStart;     // line i starts at content[lineStart[i]]
-        int[] lineEnd;       // and ends just before content[lineEnd[i]] (the '\n' is not included)
-        int lineCount;
+        byte[] fileBytes;      // poori file ke bytes
+        int[] lineStartAt;     // line i yahan se shuru hoti hai
+        int[] lineEndAt;       // aur yahan khatam (ye position line mein shaamil nahi, '\n' bhi nahi)
+        int totalLines;
 
-        FileLines(byte[] content) {
-            this.content = content;
-            int total = countLines(content);
-            lineStart = new int[total];
-            lineEnd = new int[total];
+        FileLines(byte[] fileBytes) {
+            this.fileBytes = fileBytes;
+            int lineCount = countLines(fileBytes);
+            lineStartAt = new int[lineCount];
+            lineEndAt = new int[lineCount];
 
-            int startOfCurrentLine = 0;
-            for (int pos = 0; pos < content.length; pos++) {
-                if (content[pos] == '\n') {
-                    addLine(startOfCurrentLine, pos);
-                    startOfCurrentLine = pos + 1;
+            int currentLineStart = 0;
+            for (int position = 0; position < fileBytes.length; position++) {
+                if (fileBytes[position] == '\n') {
+                    saveLine(currentLineStart, position);
+                    currentLineStart = position + 1;    // agli line '\n' ke baad se shuru
                 }
             }
-            // the last line may have no '\n' after it
-            if (startOfCurrentLine < content.length) {
-                addLine(startOfCurrentLine, content.length);
+            // last line ke baad '\n' na ho tab bhi wo ek line hai
+            if (currentLineStart < fileBytes.length) {
+                saveLine(currentLineStart, fileBytes.length);
             }
         }
 
-        private void addLine(int start, int end) {
-            lineStart[lineCount] = start;
-            lineEnd[lineCount] = end;
-            lineCount++;
+        private void saveLine(int start, int end) {
+            lineStartAt[totalLines] = start;
+            lineEndAt[totalLines] = end;
+            totalLines++;
         }
 
-        // one line per '\n', plus one more if the file does not end with '\n'
-        private static int countLines(byte[] content) {
+        // Har '\n' ek line, aur agar file '\n' pe khatam nahi hoti to ek line aur
+        private static int countLines(byte[] bytes) {
             int count = 0;
-            for (byte value : content) {
-                if (value == '\n') count++;
+            for (byte oneByte : bytes) {
+                if (oneByte == '\n') count++;
             }
-            boolean lastLineHasNoNewline = content.length > 0 && content[content.length - 1] != '\n';
+            boolean lastLineHasNoNewline = bytes.length > 0 && bytes[bytes.length - 1] != '\n';
             if (lastLineHasNoNewline) count++;
             return count;
         }
 
-        int lineLength(int line) {
-            return lineEnd[line] - lineStart[line];
+        int lengthOfLine(int line) {
+            return lineEndAt[line] - lineStartAt[line];
         }
 
-        // Line as a String that is equal to another only if the bytes are equal.
-        // ISO-8859-1 turns every byte into exactly one char, so this also works
-        // for bytes that are not valid UTF-8.
-        String lineAsKey(int line) {
-            return new String(content, lineStart[line], lineLength(line), StandardCharsets.ISO_8859_1);
+        // Line ko aisi String mein badlo jo tabhi equal ho jab bytes bilkul same hon.
+        // ISO-8859-1 har byte ko exactly ek char banata hai, isliye invalid UTF-8 bhi theek chalta hai.
+        String lineAsCompareKey(int line) {
+            return new String(fileBytes, lineStartAt[line], lengthOfLine(line), StandardCharsets.ISO_8859_1);
         }
 
-        // Line as Unicode code points, for Part B (highlight files are always valid UTF-8).
-        // An emoji is one code point, even though Java stores it as two chars.
-        int[] lineAsCodePoints(int line) {
-            String text = new String(content, lineStart[line], lineLength(line), StandardCharsets.UTF_8);
+        // Part B ke liye: line ke characters (Unicode code points).
+        // Java mein emoji 2 chars hota hai, lekin codePoints() use 1 hi ginta hai - yahi chahiye.
+        int[] lineAsCharacters(int line) {
+            String text = new String(fileBytes, lineStartAt[line], lengthOfLine(line), StandardCharsets.UTF_8);
             return text.codePoints().toArray();
         }
     }
 
-    // Gives every different line a number. Equal lines (in either file) get the same number.
-    // Then the diff only has to compare ints, which is much faster than comparing strings.
-    static int[] linesToNumbers(FileLines file, HashMap<String, Integer> numberOfLine) {
-        int[] numbers = new int[file.lineCount];
-        for (int line = 0; line < file.lineCount; line++) {
-            String key = file.lineAsKey(line);
-            Integer number = numberOfLine.get(key);
+    // Har alag line ko ek number de do. Same line (A mein ho ya B mein) ko same number milega.
+    // Phir diff ko sirf ints compare karne padte hain - strings se bahut fast.
+    // Example: A = [x, y, x], B = [y, z]  ->  A = [0, 1, 0], B = [1, 2]
+    static int[] convertLinesToNumbers(FileLines file, HashMap<String, Integer> numberForLine) {
+        int[] lineNumbers = new int[file.totalLines];
+        for (int line = 0; line < file.totalLines; line++) {
+            String key = file.lineAsCompareKey(line);
+            Integer number = numberForLine.get(key);
             if (number == null) {
-                number = numberOfLine.size();      // next unused number
-                numberOfLine.put(key, number);
+                number = numberForLine.size();     // nayi line hai, agla free number do
+                numberForLine.put(key, number);
             }
-            numbers[line] = number;
+            lineNumbers[line] = number;
         }
-        return numbers;
+        return lineNumbers;
     }
 
     // =================================================================
-    // 2. Myers' diff algorithm
+    // PART 2: Myers' diff algorithm
     // =================================================================
     //
-    // It works on any two int sequences: line numbers (Part A) or code points (Part B).
+    // Ye kisi bhi do int sequences pe chalta hai: line numbers (Part A) ya characters (Part B).
     //
-    // The edit graph (from T2):
-    //   - x is a position in sequence A, y is a position in sequence B
-    //   - move right   (x+1)       = delete A[x]
-    //   - move down    (y+1)       = insert B[y]
-    //   - move diagonal (x+1, y+1) = A[x] equals B[y], keep it, costs nothing (a "snake")
-    //   - k = x - y is the number of the diagonal we are on
-    //   - V[k] = the furthest x we have reached on diagonal k
-    //   - d = number of edits used so far; we try d = 0, 1, 2, ... until we reach the end
+    // Edit graph (T2 notes wala):
+    //   - x = sequence A mein position, y = sequence B mein position
+    //   - right jaana    (x+1)      = A[x] delete karna
+    //   - neeche jaana   (y+1)      = B[y] insert karna
+    //   - diagonal jaana (x+1, y+1) = A[x] == B[y], free mein aage (isse "snake" kehte hain)
+    //   - k = x - y  -> hum kaunse diagonal pe hain
+    //   - V[k] = diagonal k pe ab tak sabse door kaunsa x pahuncha
+    //   - d = ab tak kitne edits use kiye; d = 0, 1, 2, ... try karte hain jab tak end na mil jaye
     //
-    // The simple version saves a copy of V for every d so it can walk back
-    // and find the path. For big files that copy uses far too much memory.
+    // Simple version har d ke liye V ki copy save karta hai (baad mein path wapas dhoondhne ke liye).
+    // 500k lines ki file pe ye copy bahut zyada memory khaati hai (768 MiB limit cross).
     //
-    // So we use the linear-space version (Myers' paper, section 4b):
-    //   - search forward from the start (0, 0) and backward from the end (N, M) at the same time
-    //   - the place where the two searches meet (the "middle snake") lies on a shortest path
-    //   - split the problem there into a top-left part and a bottom-right part
-    //   - solve both parts the same way (recursion)
-    // Memory is now only O(N + M), and time is still O(N * D).
+    // Isliye hum linear-space version use karte hain (Myers paper, section 4b):
+    //   1. start (0,0) se aage ki taraf search, aur end (N,M) se peeche ki taraf search - dono saath mein
+    //   2. jahan dono search milti hain ("middle snake"), wo point kisi shortest path pe hota hai
+    //   3. us point pe problem ko do hisson mein tod do: upar-baaye wala aur neeche-daaye wala
+    //   4. dono hisson ko same tareeke se solve karo (recursion)
+    // Memory sirf O(N + M), time abhi bhi O(N * D).
     //
-    // The answer is stored as two arrays of marks:
-    //   isDeleted[i]  = true when A[i] is deleted
-    //   isInserted[j] = true when B[j] is inserted
-    // Everything not marked is kept, and the kept parts of A and B are equal, in order.
+    // Answer do arrays mein aata hai:
+    //   isDeleted[i]  = true matlab A[i] delete hua
+    //   isInserted[j] = true matlab B[j] insert hua
+    // Jo mark nahi hua wo "keep" hai, aur A aur B ke kept parts order mein same hote hain.
 
-    // A point (x, y) in the edit graph
+    // Edit graph ka ek point (x, y)
     record Point(int x, int y) { }
 
     static class MyersDiff {
-        private final int[] a;
-        private final int[] b;
+        private final int[] sequenceA;
+        private final int[] sequenceB;
         final boolean[] isDeleted;
         final boolean[] isInserted;
 
-        // V arrays for the forward and the backward search.
-        // k can be negative, so V[k] is stored at index k + offset.
-        // They are made once and reused by every recursive call.
+        // Forward aur backward search ke V arrays.
+        // k negative bhi ho sakta hai, isliye V[k] ko index (k + offset) pe rakhte hain.
+        // Ek hi baar banate hain, har recursive call inhi ko reuse karti hai.
         private final int[] forwardV;
         private final int[] backwardV;
         private final int offset;
 
-        MyersDiff(int[] a, int[] b) {
-            this.a = a;
-            this.b = b;
-            isDeleted = new boolean[a.length];
-            isInserted = new boolean[b.length];
+        MyersDiff(int[] sequenceA, int[] sequenceB) {
+            this.sequenceA = sequenceA;
+            this.sequenceB = sequenceB;
+            isDeleted = new boolean[sequenceA.length];
+            isInserted = new boolean[sequenceB.length];
 
-            int maxRounds = (a.length + b.length + 1) / 2 + 1;
+            int maxRounds = (sequenceA.length + sequenceB.length + 1) / 2 + 1;
             offset = maxRounds + 1;
             forwardV = new int[2 * maxRounds + 3];
             backwardV = new int[2 * maxRounds + 3];
         }
 
-        // Runs the diff on the whole of a and b. Results are in isDeleted / isInserted.
-        MyersDiff compute() {
-            diffRange(0, a.length, 0, b.length);
+        // Poore A aur B ka diff nikaalo. Result isDeleted / isInserted mein milega.
+        MyersDiff findDiff() {
+            diffPart(0, sequenceA.length, 0, sequenceB.length);
             return this;
         }
 
-        // Diff of a[aStart..aEnd) against b[bStart..bEnd)  (end not included)
-        private void diffRange(int aStart, int aEnd, int bStart, int bEnd) {
-            // Equal elements at the start are always kept: skip them
-            while (aStart < aEnd && bStart < bEnd && a[aStart] == b[bStart]) {
+        // A[aStart..aEnd) aur B[bStart..bEnd) ka diff  (end wala index shaamil nahi)
+        private void diffPart(int aStart, int aEnd, int bStart, int bEnd) {
+            // Shuru ki same lines hamesha keep hoti hain - unhe skip karo
+            while (aStart < aEnd && bStart < bEnd && sequenceA[aStart] == sequenceB[bStart]) {
                 aStart++;
                 bStart++;
             }
-            // Equal elements at the end are always kept: skip them
-            while (aStart < aEnd && bStart < bEnd && a[aEnd - 1] == b[bEnd - 1]) {
+            // Aakhri ki same lines bhi hamesha keep hoti hain - unhe bhi skip karo
+            while (aStart < aEnd && bStart < bEnd && sequenceA[aEnd - 1] == sequenceB[bEnd - 1]) {
                 aEnd--;
                 bEnd--;
             }
 
-            // Nothing left in A: the rest of B is inserted
+            // A mein kuch nahi bacha -> B ka bacha hua sab insert hai
             if (aStart == aEnd) {
-                for (int j = bStart; j < bEnd; j++) isInserted[j] = true;
+                markAsInserted(bStart, bEnd);
                 return;
             }
-            // Nothing left in B: the rest of A is deleted
+            // B mein kuch nahi bacha -> A ka bacha hua sab delete hai
             if (bStart == bEnd) {
-                for (int i = aStart; i < aEnd; i++) isDeleted[i] = true;
+                markAsDeleted(aStart, aEnd);
                 return;
             }
 
-            // Both sides still have elements and need at least 2 edits here,
-            // so the split point is strictly inside and both halves are smaller.
-            Point split = findMiddleSnake(aStart, aEnd, bStart, bEnd);
-            int splitA = aStart + split.x();
-            int splitB = bStart + split.y();
-            diffRange(aStart, splitA, bStart, splitB);     // top-left part
-            diffRange(splitA, aEnd, splitB, bEnd);         // bottom-right part
+            // Dono taraf kuch bacha hai, to kam se kam 2 edits lagenge.
+            // Middle snake dhoondho aur wahan se problem ko do chhote hisson mein todo.
+            Point meetingPoint = findMiddleSnake(aStart, aEnd, bStart, bEnd);
+            int splitA = aStart + meetingPoint.x();
+            int splitB = bStart + meetingPoint.y();
+            diffPart(aStart, splitA, bStart, splitB);     // upar-baaya hissa
+            diffPart(splitA, aEnd, splitB, bEnd);         // neeche-daaya hissa
         }
 
-        // Finds a point on a shortest edit path for a[aStart..aEnd) vs b[bStart..bEnd).
-        // The point is returned relative to (aStart, bStart).
-        private Point findMiddleSnake(int aStart, int aEnd, int bStart, int bEnd) {
-            int n = aEnd - aStart;              // length of this part of a
-            int m = bEnd - bStart;              // length of this part of b
-            int delta = n - m;                  // the diagonal of the end point (n, m)
-            boolean deltaIsOdd = (delta % 2) != 0;
-            int maxRounds = (n + m + 1) / 2;    // each search needs at most half of the edits
+        private void markAsInserted(int from, int to) {
+            for (int j = from; j < to; j++) isInserted[j] = true;
+        }
 
-            // Start values, so that in round d = 0 both searches begin at x = 0 on diagonal 0
+        private void markAsDeleted(int from, int to) {
+            for (int i = from; i < to; i++) isDeleted[i] = true;
+        }
+
+        // A[aStart..aEnd) vs B[bStart..bEnd) ke liye ek aisa point dhoondho jo shortest path pe ho.
+        // Point (aStart, bStart) ke relative return hota hai.
+        private Point findMiddleSnake(int aStart, int aEnd, int bStart, int bEnd) {
+            int n = aEnd - aStart;              // A ke is hisse ki length
+            int m = bEnd - bStart;              // B ke is hisse ki length
+            int delta = n - m;                  // end point (n, m) ka diagonal
+            boolean deltaIsOdd = (delta % 2) != 0;
+            int maxRounds = (n + m + 1) / 2;    // har search ko zyada se zyada aadhe edits chahiye
+
+            // Shuruaati value, taaki round d = 0 mein dono search diagonal 0 pe x = 0 se shuru hon
             forwardV[1 + offset] = 0;
             backwardV[1 + offset] = 0;
 
             for (int d = 0; d <= maxRounds; d++) {
 
-                // ---------- forward search, from (0, 0) towards (n, m) ----------
+                // ---------- Forward search: (0,0) se (n,m) ki taraf ----------
                 for (int k = -d; k <= d; k += 2) {
-                    int x = nextStartX(forwardV, k, d);
+                    int x = chooseStartX(forwardV, k, d);
                     int y = x - k;
-
-                    // Follow the snake: keep moving diagonally while the elements are equal
-                    while (x < n && y < m && a[aStart + x] == b[bStart + y]) {
-                        x++;
-                        y++;
-                    }
+                    x = followSnakeForward(x, y, n, m, aStart, bStart);   // jab tak same hai, diagonal chalo
+                    y = x - k;
                     forwardV[k + offset] = x;
 
-                    // If delta is odd, the two searches can only meet right after a forward step.
-                    // Forward diagonal k is the same line as backward diagonal (delta - k).
-                    // The backward search has finished d - 1 rounds, so it knows diagonals -(d-1)..(d-1).
-                    int backwardK = delta - k;
-                    boolean backwardKnowsThisDiagonal = backwardK >= -(d - 1) && backwardK <= d - 1;
-                    if (deltaIsOdd && backwardKnowsThisDiagonal
-                            && x + backwardV[backwardK + offset] >= n) {
+                    // delta odd ho to dono search sirf forward step ke baad mil sakti hain.
+                    if (deltaIsOdd && backwardSearchReached(k, delta, d - 1, x, n)) {
                         return new Point(x, y);
                     }
                 }
 
-                // ---------- backward search, from (n, m) towards (0, 0) ----------
-                // Same steps as forward, but we read a and b from the end.
-                // Here x and y count how far we are from the END of a and b.
+                // ---------- Backward search: (n,m) se (0,0) ki taraf ----------
+                // Forward jaisa hi, bas A aur B ko peeche se padhte hain.
+                // Yahan x aur y batate hain ki hum END se kitna door hain.
                 for (int k = -d; k <= d; k += 2) {
-                    int x = nextStartX(backwardV, k, d);
+                    int x = chooseStartX(backwardV, k, d);
                     int y = x - k;
-
-                    // Follow the snake backwards (moving up-left)
-                    while (x < n && y < m && a[aEnd - 1 - x] == b[bEnd - 1 - y]) {
-                        x++;
-                        y++;
-                    }
+                    x = followSnakeBackward(x, y, n, m, aEnd, bEnd);      // peeche ki taraf diagonal chalo
+                    y = x - k;
                     backwardV[k + offset] = x;
 
-                    // If delta is even, the two searches can only meet right after a backward step.
-                    // The forward search has finished d rounds, so it knows diagonals -d..d.
-                    int forwardK = delta - k;
-                    boolean forwardKnowsThisDiagonal = forwardK >= -d && forwardK <= d;
-                    if (!deltaIsOdd && forwardKnowsThisDiagonal
-                            && x + forwardV[forwardK + offset] >= n) {
-                        // turn "distance from the end" back into a normal point
+                    // delta even ho to dono search sirf backward step ke baad mil sakti hain.
+                    if (!deltaIsOdd && forwardSearchReached(k, delta, d, x, n)) {
+                        // "end se doori" ko normal point mein badlo
                         return new Point(n - x, m - y);
                     }
                 }
             }
-            throw new IllegalStateException("middle snake not found");   // cannot happen
+            throw new IllegalStateException("middle snake nahi mila");   // aisa kabhi nahi hoga
         }
 
-        // The usual Myers step: where do we start on diagonal k in round d?
-        //   - come DOWN from diagonal k+1 (an insert, x stays the same), or
-        //   - come RIGHT from diagonal k-1 (a delete, x goes up by 1),
-        // and pick whichever of the two has gone further.
-        private int nextStartX(int[] v, int k, int d) {
-            boolean goDown = (k == -d) || (k != d && v[k - 1 + offset] < v[k + 1 + offset]);
-            if (goDown) {
+        // Myers ka main step: round d mein diagonal k pe kahan se shuru karein?
+        //   - diagonal k+1 se NEECHE aao (insert, x same rehta hai), ya
+        //   - diagonal k-1 se RIGHT aao  (delete, x ek badhta hai)
+        // Jo bhi zyada aage pahuncha hai, wahi choose karo.
+        private int chooseStartX(int[] v, int k, int d) {
+            boolean comeDown = (k == -d) || (k != d && v[k - 1 + offset] < v[k + 1 + offset]);
+            if (comeDown) {
                 return v[k + 1 + offset];
             }
             return v[k - 1 + offset] + 1;
         }
+
+        // SNAKE: jab tak A aur B ke elements same hain, diagonal pe free mein aage badho.
+        // Naya x return karta hai.
+        private int followSnakeForward(int x, int y, int n, int m, int aStart, int bStart) {
+            while (x < n && y < m && sequenceA[aStart + x] == sequenceB[bStart + y]) {
+                x++;
+                y++;
+            }
+            return x;
+        }
+
+        // Backward wala SNAKE: same kaam, lekin A aur B ko end se padhte hain (upar-baayein chalna).
+        private int followSnakeBackward(int x, int y, int n, int m, int aEnd, int bEnd) {
+            while (x < n && y < m && sequenceA[aEnd - 1 - x] == sequenceB[bEnd - 1 - y]) {
+                x++;
+                y++;
+            }
+            return x;
+        }
+
+        // Forward diagonal k aur backward diagonal (delta - k) ek hi line hain.
+        // Kya backward search is diagonal pe itna aa chuki hai ki dono overlap ho gayi?
+        // backwardRoundsDone rounds ke baad backward ko diagonals -rounds..+rounds pata hote hain.
+        private boolean backwardSearchReached(int k, int delta, int backwardRoundsDone, int forwardX, int n) {
+            int backwardK = delta - k;
+            boolean known = backwardK >= -backwardRoundsDone && backwardK <= backwardRoundsDone;
+            return known && forwardX + backwardV[backwardK + offset] >= n;
+        }
+
+        // Upar wala hi check, ulta: kya forward search is diagonal pe backward se mil chuki hai?
+        private boolean forwardSearchReached(int k, int delta, int forwardRoundsDone, int backwardX, int n) {
+            int forwardK = delta - k;
+            boolean known = forwardK >= -forwardRoundsDone && forwardK <= forwardRoundsDone;
+            return known && backwardX + forwardV[forwardK + offset] >= n;
+        }
     }
 
     // =================================================================
-    // 3. Part B: which characters changed inside a line pair
+    // PART 3 (Part B): line ke andar kaun se characters badle
     // =================================================================
 
-    // Runs the same Myers diff on the characters of the old and new line and
-    // returns the extra line, for example "? 12-13 | 11-12".
-    static String buildHighlightLine(int[] oldChars, int[] newChars) {
-        MyersDiff charDiff = new MyersDiff(oldChars, newChars).compute();
-        return "? " + marksToRanges(charDiff.isDeleted) + " | " + marksToRanges(charDiff.isInserted);
+    // Purani aur nayi line ke characters pe wahi Myers diff chalao,
+    // aur extra line banao, jaise "? 12-13 | 11-12".
+    static String makeHighlightLine(int[] oldLineChars, int[] newLineChars) {
+        MyersDiff charDiff = new MyersDiff(oldLineChars, newLineChars).findDiff();
+        String oldRanges = marksToRangeText(charDiff.isDeleted);
+        String newRanges = marksToRangeText(charDiff.isInserted);
+        return "? " + oldRanges + " | " + newRanges;
     }
 
-    // Turns marks into ranges, for example
-    //   [no, yes, yes, no, yes]  ->  "1-3,4-5"     (the end of a range is not included)
-    //   nothing marked           ->  "."
-    // Touching ranges are merged automatically, because a range only ends at an unmarked position.
-    static String marksToRanges(boolean[] marked) {
-        StringBuilder ranges = new StringBuilder();
-        int pos = 0;
-        while (pos < marked.length) {
-            if (!marked[pos]) {
-                pos++;
+    // Marks ko ranges mein badlo. Range ka end shaamil nahi hota.
+    //   [no, yes, yes, no, yes]  ->  "1-3,4-5"
+    //   kuch bhi marked nahi     ->  "."
+    // Touching ranges apne aap merge ho jaati hain, kyunki range sirf unmarked position pe khatam hoti hai.
+    static String marksToRangeText(boolean[] isMarked) {
+        StringBuilder rangeText = new StringBuilder();
+        int position = 0;
+        while (position < isMarked.length) {
+            if (!isMarked[position]) {
+                position++;
                 continue;
             }
-            int rangeStart = pos;
-            while (pos < marked.length && marked[pos]) pos++;
-            if (ranges.length() > 0) ranges.append(',');
-            ranges.append(rangeStart).append('-').append(pos);
+            int rangeStart = position;
+            while (position < isMarked.length && isMarked[position]) position++;   // marked hisse ke end tak jao
+            if (rangeText.length() > 0) rangeText.append(',');
+            rangeText.append(rangeStart).append('-').append(position);
         }
-        return ranges.length() == 0 ? "." : ranges.toString();
+        return rangeText.length() == 0 ? "." : rangeText.toString();
     }
 
     // =================================================================
-    // 4. Printing the diff
+    // PART 4: Diff print karna
     // =================================================================
 
-    // Writes: prefix character + the exact bytes of the line + '\n'
-    static void writeLine(OutputStream out, char prefix, FileLines file, int line) throws IOException {
+    // Likho: prefix character + line ke exact bytes + '\n'
+    static void printLine(OutputStream out, char prefix, FileLines file, int line) throws IOException {
         out.write(prefix);
-        out.write(file.content, file.lineStart[line], file.lineLength(line));
+        out.write(file.fileBytes, file.lineStartAt[line], file.lengthOfLine(line));
         out.write('\n');
     }
 
-    static void printDiff(FileLines fileA, FileLines fileB, MyersDiff diff, boolean showHighlights,
+    static void printDiff(FileLines fileA, FileLines fileB, MyersDiff diff, boolean showHighlight,
                           OutputStream out) throws IOException {
-        int countA = fileA.lineCount;
-        int countB = fileB.lineCount;
-        int lineA = 0;      // next line of A to print
-        int lineB = 0;      // next line of B to print
+        int linesInA = fileA.totalLines;
+        int linesInB = fileB.totalLines;
+        int nextLineA = 0;      // A ki agli line jo print karni hai
+        int nextLineB = 0;      // B ki agli line jo print karni hai
 
-        // line numbers of the current change block (made once, reused for every block)
-        int[] deletedLines = new int[countA];
-        int[] insertedLines = new int[countB];
+        // Ek change block ki deleted aur inserted lines (ek baar banao, har block mein reuse)
+        int[] deletedLines = new int[linesInA];
+        int[] insertedLines = new int[linesInB];
 
-        while (lineA < countA || lineB < countB) {
+        while (nextLineA < linesInA || nextLineB < linesInB) {
 
-            // Keep line: neither side is marked, so these two lines are the same
-            boolean bothKept = lineA < countA && lineB < countB
-                    && !diff.isDeleted[lineA] && !diff.isInserted[lineB];
-            if (bothKept) {
-                writeLine(out, ' ', fileA, lineA);
-                lineA++;
-                lineB++;
+            // Keep line: dono taraf kuch mark nahi, matlab ye dono lines same hain
+            boolean isKeepLine = nextLineA < linesInA && nextLineB < linesInB
+                    && !diff.isDeleted[nextLineA] && !diff.isInserted[nextLineB];
+            if (isKeepLine) {
+                printLine(out, ' ', fileA, nextLineA);
+                nextLineA++;
+                nextLineB++;
                 continue;
             }
 
-            // Otherwise we are at the start of a change block.
-            // Collect every deleted and inserted line until the next kept line.
+            // Warna ye ek change block ki shuruaat hai.
+            // Agli keep line aane tak saari deleted aur inserted lines jama karo.
             int deletedCount = 0;
             int insertedCount = 0;
-            while ((lineA < countA && diff.isDeleted[lineA]) || (lineB < countB && diff.isInserted[lineB])) {
-                while (lineA < countA && diff.isDeleted[lineA]) deletedLines[deletedCount++] = lineA++;
-                while (lineB < countB && diff.isInserted[lineB]) insertedLines[insertedCount++] = lineB++;
+            while ((nextLineA < linesInA && diff.isDeleted[nextLineA])
+                    || (nextLineB < linesInB && diff.isInserted[nextLineB])) {
+                while (nextLineA < linesInA && diff.isDeleted[nextLineA]) {
+                    deletedLines[deletedCount++] = nextLineA++;
+                }
+                while (nextLineB < linesInB && diff.isInserted[nextLineB]) {
+                    insertedLines[insertedCount++] = nextLineB++;
+                }
             }
 
-            // Delete-first rule: all "-" lines, then all "+" lines
+            // Delete-first rule: pehle saari "-" lines, phir saari "+" lines
             for (int i = 0; i < deletedCount; i++) {
-                writeLine(out, '-', fileA, deletedLines[i]);
+                printLine(out, '-', fileA, deletedLines[i]);
             }
             for (int i = 0; i < insertedCount; i++) {
-                writeLine(out, '+', fileB, insertedLines[i]);
+                printLine(out, '+', fileB, insertedLines[i]);
 
-                // Part B: the i-th "+" line is paired with the i-th "-" line (if there is one)
-                boolean hasPair = i < deletedCount;
-                if (showHighlights && hasPair) {
-                    int[] oldChars = fileA.lineAsCodePoints(deletedLines[i]);
-                    int[] newChars = fileB.lineAsCodePoints(insertedLines[i]);
-                    out.write(buildHighlightLine(oldChars, newChars).getBytes(StandardCharsets.US_ASCII));
-                    out.write('\n');
+                // Part B: i-th "+" line ka jodi i-th "-" line hai (agar wo hai to)
+                boolean hasPairLine = i < deletedCount;
+                if (showHighlight && hasPairLine) {
+                    printHighlightLine(out, fileA, deletedLines[i], fileB, insertedLines[i]);
                 }
             }
         }
     }
 
+    static void printHighlightLine(OutputStream out, FileLines fileA, int oldLine, FileLines fileB, int newLine)
+            throws IOException {
+        int[] oldChars = fileA.lineAsCharacters(oldLine);
+        int[] newChars = fileB.lineAsCharacters(newLine);
+        out.write(makeHighlightLine(oldChars, newChars).getBytes(StandardCharsets.US_ASCII));
+        out.write('\n');
+    }
+
     // =================================================================
-    // 5. main
+    // PART 5: main
     // =================================================================
 
     public static void main(String[] args) throws IOException {
-        // one buffered stream for all output: much faster than System.out.println per line,
-        // and it writes the line bytes exactly as they are
+        // Saara output ek buffered stream se: har line pe System.out.println se bahut fast,
+        // aur line ke bytes bilkul waise hi likhe jaate hain jaise file mein the
         OutputStream out = new BufferedOutputStream(new FileOutputStream(FileDescriptor.out), 1 << 16);
         int exitCode = run(args, out, System.err);
         out.flush();
         if (exitCode != 0) System.exit(exitCode);
     }
 
-    // Does the whole job and returns the exit code (0 = ok, 2 = bad arguments or unreadable file).
-    // It is separate from main so that the tests can call it directly.
+    // Poora kaam karta hai aur exit code return karta hai (0 = sab theek, 2 = galat arguments ya file nahi padhi).
+    // main se alag rakha hai taaki tests isko seedha call kar sakein.
     static int run(String[] args, OutputStream out, PrintStream err) throws IOException {
-        boolean validCommand = args.length == 3 && (args[0].equals("lines") || args[0].equals("highlight"));
-        if (!validCommand) {
+        boolean isValidCommand = args.length == 3 && (args[0].equals("lines") || args[0].equals("highlight"));
+        if (!isValidCommand) {
             err.println("usage: java Main lines|highlight A B");
             return 2;
         }
-        boolean showHighlights = args[0].equals("highlight");
+        boolean showHighlight = args[0].equals("highlight");
 
-        // Read both files before printing anything, so a bad file leaves stdout empty
+        // Kuch bhi print karne se pehle dono files padh lo, taaki galat file pe stdout khaali rahe
         FileLines fileA;
         FileLines fileB;
         try {
@@ -421,13 +459,13 @@ public class Main {
             return 2;
         }
 
-        // Both files share one map, so the same line gets the same number in A and in B
-        HashMap<String, Integer> numberOfLine = new HashMap<>();
-        int[] numbersA = linesToNumbers(fileA, numberOfLine);
-        int[] numbersB = linesToNumbers(fileB, numberOfLine);
+        // Dono files ek hi map share karti hain, taaki same line ko A aur B mein same number mile
+        HashMap<String, Integer> numberForLine = new HashMap<>();
+        int[] numbersA = convertLinesToNumbers(fileA, numberForLine);
+        int[] numbersB = convertLinesToNumbers(fileB, numberForLine);
 
-        MyersDiff diff = new MyersDiff(numbersA, numbersB).compute();
-        printDiff(fileA, fileB, diff, showHighlights, out);
+        MyersDiff diff = new MyersDiff(numbersA, numbersB).findDiff();
+        printDiff(fileA, fileB, diff, showHighlight, out);
         return 0;
     }
 }
